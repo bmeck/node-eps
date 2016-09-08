@@ -538,3 +538,10 @@ setTimeout(_ => module.exports = null);
 
 Will not see `module.exports` change to `null`. All ES module `import`s of the
 module will always see `{default=123}`.
+
+## 6. Future todo
+
+The following are points which **must** be addressed in the future pending finalization of ESM support in Node. Such problems are not addressed here in order to give time to properly specify the semantics after ESM semantics are fully solidified and to give time to properly design solutions to these problems.
+
+* `vm.Module` and ways to create custom ESM implementations such as those in [jsdom](https://github.com/tmpvar/jsdom).
+* Some form of module loader hooks including but not necessarily limited to: source code transformation, cache manipulation for both the ESM and NCJS cache, and affecting the behavior of loading modules.
