@@ -1,8 +1,8 @@
-| Title  | ESM Interoperability |
+| Title  | ES Module Interoperability  |
 |--------|-----------------------------|
 | Author | @bmeck                      |
 | Status | DRAFT                       |
-| Date   | 2016-08-26                  |
+| Date   | 2017-03-01                  |
 
 **NOTE:** `DRAFT` status does not mean ESM will be implemented in Node
 core. Instead that this is the standard, should Node core decide to implement
@@ -12,26 +12,23 @@ ESM. At which time this draft would be moved to `ACCEPTED`.
 
 Abbreviations:
 * `ESM` - Ecma262 Modules (ES Modules)
-* `NCJS` - Node Modules (a CommonJS variant)
+* `CJS` - Node Modules (a CommonJS variant)
 
 The intent of this standard is to:
 
-* implement interoperability for ESM and Node's existing module system
-* create a **Registry Object** (see WHATWG section below) compatible with
-  the [WHATWG Loader](http://whatwg.github.io/loader/) Registry and/or [WHATWG module map](https://html.spec.whatwg.org/multipage/webappapis.html#module-map)
+* implement interoperability for ESM and Node's existing CommonJS module system (CJS)
 
 ## 1. Purpose
 
 1. Allow a common module syntax for Browser and Server.
-2. Allow a common registry for inspection by Browser and Server
-   environments/tools.
-    * These will most likely be represented by metaproperties like
-      `import.context`, but the spec is not yet fully in place.
+2. Allow a common set of context variables for Browser and Server.
 
 ## 2. Related
 
-[ECMA262](tc39.github.io/ecma262/) discusses the syntax and semantics of
-related syntax, and introduces:
+[ECMA262](https://tc39.github.io/ecma262/) discusses the syntax and semantics of
+related syntax, and introduces ESM.
+
+[Dynamic Import](https://github.com/tc39/proposal-dynamic-import) introduces `import()` which will be available in all parsing goals.
 
 ### 2.1. Types
 
@@ -56,136 +53,131 @@ related syntax, and introduces:
     - A hook for when an import is exactly performed. This returns a
       `ModuleRecord`. Used as a means to grab modules from Node's loader/cache.
 
-* **[ModuleNamespaceCreate]
-(https://tc39.github.io/ecma262/#sec-modulenamespacecreate)**
-    - Provides a means of creating a list of exports manually, used so that
-      NCJS `module.exports` can create `ModuleRecord`s that are
-      prepopulated.
-
 ## 3. Semantics
 
-### 3.1. Determining if source is an ES Module
+### 3.1. Async loading
 
-A new file type will be used for ES Modules, `.mjs`. Files with this extension
-will be treated using the loading semantics in this document, but retain a way
-to load existing extensions of `.json`, `.node`, and `.js`. The file type for
-JavaScript with IANA as an official file type needs to have this extensions
-added. This comes from browsers being unable to implement a new MIME for the
-differing parse goals. In order to make this change, contact the IESG.
+ESM imports will be loaded asynchronously. This matches browser behavior. This means:
 
-The `.mjs` file extension will be searched for prior to any `.js` file in any
-algorithm that uses searching (`require` or `import`); e.g. once the Node
-resolution algorithm reaches file expansion, `path + '.mjs'` would be searched
-prior to `path + '.js'` when performing `require(path)`.
+* If a new `import` is queued up, it will never evaluate synchronously.
+* Between module evaluation within the same graph there may be other work done. Order of module evaluation within a module graph will always be preserved.
+* Multiple module graphs could be loading at the same time concurrently.
 
-# 3.1.1. Inter package loading using file extension breakage.
+### 3.2. Determining if source is an ES Module
 
-There is knowledge of breakage for code that upgrades inner package
-dependencies such as `require('foo/bar.js')`. As `bar.js` may move to
-`bar.mjs`. Since `bar.js` is not the listed entry point this was considered
-acceptable.
+A new file type will be recognised, `.mjs`, for ES modules. This file type will be registered with IANA as an official file type, see TC39 issue. There are no known issues with browsers since they [do not determine MIME type using file extensions](https://mimesniff.spec.whatwg.org/#interpreting-the-resource-metadata).
 
-### 3.2. Import Path Parsing
+The `.mjs` file extension will not be loadable via `require()`. This means that, once the Node resolution algorithm reaches file expansion, the path for path + `.mjs` would throw an error. In order to support loading ESM in CJS files please use `import()`.
 
-`import` will parse its path using URLs. As such, encoding and decoding will automatically be performed. This may affect file paths containing any of the following characters: `:`,`?`,`#`, or `%`. Details of the parsing algorithm are at the [WHATWG URL Spec](https://url.spec.whatwg.org/)
+### 3.3. ES Import Path Resolution
+
+
+ES `import` statements will perform non-exact searches on relative or
+absolute paths, like `require()`. This means that file extensions, and
+index files will be searched. However, ESM import specifier resolution will be done using URLs which match closer to the browser. Unlike browsers, only the `file:` protocol will be supported until network and security issues can be researched for other protocols.
+
+With `import` being URL based encoding and decoding will automatically be performed. This may affect file paths containing any of the following characters: `:`,`?`,`#`, or `%`. Details of the parsing algorithm are at the [WHATWG URL Spec](https://url.spec.whatwg.org/).
 
 * paths with `:` face multiple variations of path mutation
 * paths with `%` in their path segments would be decoded
 * paths with `?`, or `#` in their paths would face truncation of pathname
 
-### 3.3. Import Path Resolution
+All behavior differing from the [`type=module` path resolution algorithm](https://html.spec.whatwg.org/multipage/webappapis.html#resolve-a-module-specifier) will be places in locations that would throw errors in the browser.
 
-The `import` resolution algorithm for node is as follows:
+#### 3.3.1. Algorithms
 
-* `request` should represent the requested path to load.
-* `context_url` should represent the current script's absolute URL's directory
-  * for CLI usage, it is the absolute URL for the current working directory
+##### 3.3.1.1. HostResolveImportedModule Search
 
-* if `request` parses via the [URL parser](https://url.spec.whatwg.org/#concept-url-parser)
-  * let `url` be the result
-* else if `^[.]?[.]?[/]` prefixes `request`
-  * let `url` be the result of `new URL(request, context_url)`
-  * if `url` points to a directory
-    * let `url` be the result of searching the directory
-  * if `url` does not point to a file
-   * for the well known file extensions `extension` in `[
-     .mjs', '.js', '.json', and '.node']`
-     * let `searchUrl` be a copy of `url` with `extension` added to the pathname
-     * if `searchUrl` points to a file
-       * let url be `searchUrl`
-       * break
-* else
-  * let `url` be the result of searching node_modules using `request` and `context_url`
-  * NOTE: checks for escaping modules to `node_modules/` via `../` going to be added
-* load url
- * we should support `data:` and `file:` out of the box
-  * `file:` should use file type to determine dependency type (ES Module / JSON / C++ / NCJS).
-  * `data:` should interpret javascript MIME as ES Module. ES Modules share the MIME with NCJS, so we don't have enough data to differentiate, so just assume ES Module since that is [what the browser will assume](https://html.spec.whatwg.org/multipage/webappapis.html#hostresolveimportedmodule(referencingmodule,-specifier)).
+Notes:
 
+* The CLI has a location URL of the process working directory.
+* Paths are resolved to realpaths normally *after* all these steps.
 
-`import` will perform non-exact searches on relative or
-absolute paths, preserving the behavior in `require()`. This means that known
-file extensions, and index files will be searched.
+1. Apply the URL parser to `specifier`. If the result is not failure, return the result.
+2. If `specifier` does start with the character U+002F SOLIDUS (`/`), the two-character sequence U+002E FULL STOP, U+002F SOLIDUS (`./`), or the three-character sequence U+002E FULL STOP, U+002E FULL STOP, U+002F SOLIDUS (`../`)
+  1. Let `specifier` be the result of applying the URL parser to `specifier` with importing location's URL as the base URL.
+  2. Return the result of applying the path search algorithm to `specifier`.
+3. Return the result of applying the module search algorithm to `specifier`.
 
-In summary:
+##### 3.3.1.2. Path Search
+
+1. If it does not throw an error, return the result of applying the file search algorithm to `specifier`.
+2. If it does not throw an error, return the result of applying the directory search algorithm to `specifier`.
+3. Throw an error.
+
+##### 3.3.1.3. File Search
+
+1. If the resource for `specifier` exists, return `specifier`.
+2. For each file extension `[".mjs", ".js", ".json", ".node"]`
+  1. Let `searchable` be a new URL from `specifier`.
+  2. Append the file extension to the pathname of `searchable`.
+  3. If the resource for `searchable` exists, return `searchable`.
+3. Throw an error.
+
+##### 3.3.1.4. Package Main Search
+
+1. If it does not throw an error, return the result of applying the file search algorithm to `specifier`.
+2. If it does not throw an error, return the result of applying the index search algorithm to `specifier`.
+3. Throw an error.
+
+##### 3.3.1.5. Index Search
+
+1. Let `searchable` be a new URL from `specifier`.
+2. If `searchable` does not have a trailing `/` in its pathname append one.
+3. Let `searchable` be the result of applying the URL parser to `./index` with `specifier` as the base URL.
+4. If it does not throw an error, return the result of applying the file search algorithm to `searchable`.
+5. Throw an error.
+
+##### 3.3.1.6. Directory Search
+
+1. Let `dir` be a new URL from `specifier`.
+2. If `dir` does not have a trailing `/` in its pathname append one.
+3. Let `searchable` be the result of applying the URL parser to `./package.json` with `dir` as the base URL.
+5. If the resource for `searchable` exists and it contains a "main" field.
+  1. Let `main` be the result of applying the URL parser to the `main` field with `dir` as the base URL.
+  2. If it does not throw an error, return the result of applying the package main search algorithm to `main`.
+6. If it does not throw an error, return the result of applying the index main search algorithm to `dir`.
+7. Throw an error.
+
+##### 3.3.1.7. Module Search
+
+1. Let `package` be a new URL from the directory containing the importing location.
+2. If `package` does not have a trailing `/` in its pathname append one.
+3. Let `searchable` be the result of applying the URL parser to `./node_modules/${specifier}` with `package` as the base URL.
+4. If it does not throw an error, return the result of applying the file search algorithm to `searchable`.
+5. If it does not throw an error, return the result of applying the directory search algorithm to `searchable`.
+6. Let `parent` be the result of applying the URL parser to `../` with `package` as the base URL.
+7. If it does not throw an error, return the result of applying the module search algorithm to `specifier` with an importing location of `parent`.
+8. Throw an error.
+
+##### 3.3.1.7. Examples
 
 ```javascript
-// looks at
-//   ./foo.mjs
-//   ./foo.js
-//   ./foo/package.json
-//   ./foo/index.mjs
-//   ./foo/index.js
-//   etc.
+import 'file:///etc/config/app.json';
+```
+
+Parseable with the URL parser. No searching.
+
+```javascript
 import './foo';
+import './foo?search';
+import './foo#hash';
+import '../bar';
+import '/baz';
 ```
 
-```javascript
-// looks at
-//   /bar.mjs
-//   /bar.js
-//   /bar/package.json
-//   /bar/index.mjs
-//   /bar/index.js
-//   etc.
-import '/bar';
-```
+Applies the URL parser to the specifiers with a base url of the importing location. Then performs the path search algorithm.
 
 ```javascript
-// looks at:
-//   ./node_modules/baz.mjs
-//   ./node_modules/baz.js
-//   ./node_modules/baz/package.json
-//   ./node_modules/baz/index.mjs
-//   ./node_modules/baz/index.js
-// and parent node_modules:
-//   ../node_modules/baz.mjs
-//   ../node_modules/baz.js
-//   ../node_modules/baz/package.json
-//   ../node_modules/baz/index.mjs
-//   ../node_modules/baz/index.js
-//   etc.
 import 'baz';
-```
-
-```javascript
-// looks at:
-//   ./node_modules/abc/123.mjs
-//   ./node_modules/abc/123.js
-//   ./node_modules/abc/123/package.json
-//   ./node_modules/abc/123/index.mjs
-//   ./node_modules/abc/123/index.js
-// and parent node_modules:
-//   ../node_modules/abc/123.mjs
-//   ../node_modules/abc/123.js
-//   ../node_modules/abc/123/package.json
-//   ../node_modules/abc/123/index.mjs
-//   ../node_modules/abc/123/index.js
-//   etc.
 import 'abc/123';
 ```
 
-#### 3.3.1. Removal of non-local dependencies
+Performs the module search algorithm.
+
+### 4. Compatibility
+
+#### 4.3.2 Removal of non-local dependencies
 
 All of the following will not be supported by the `import` statement:
 
@@ -193,11 +185,10 @@ All of the following will not be supported by the `import` statement:
 * `$HOME/.node_modules`
 * `$HOME/.node_libraries`
 * `$PREFIX/lib/node`
-* `module/../../outside-of-module`
 
 Use local dependencies, and symbolic links as needed.
 
-##### 3.3.1.1. How to support non-local dependencies
+##### 4.3.2.1 How to support non-local dependencies
 
 Although not recommended, and in fact discouraged, there is a way to support
 non-local dependencies. **USE THIS AT YOUR OWN DISCRETION**.
@@ -226,28 +217,32 @@ Transform to:
 
 And nest as many times as needed.
 
-#### 3.3.2. Errors from new path behavior.
+#### 4.3.3. Removal of fallthrough behavior.
 
-In the case that an `import` is unable to find a module, Node should
+Exact algorithm TBD.
+
+#### 4.3.4. Errors from new path behavior.
+
+In the case that an `import` statement is unable to find a module, Node should
 make a **best effort** to see if `require` would have found the module and
 print out where it was found, if `NODE_PATH` was used, if `HOME` was used, etc.
 
-#### 3.3.3. Shipping both ESM and NCJS
+#### 4.4. Shipping both ESM and CJS
 
 When a `package.json` main is encountered, file extension searches are used to
-provide a means to ship both ESM and NCJS variants of packages. If we have two
+provide a means to ship both ESM and CJS variants of packages. If we have two
 entry points `index.mjs` and `index.js` setting `"main":"./index"` in
 `package.json` will make Node pick up either, depending on what is supported.
 
-##### 3.3.3.1. Excluding main
+##### 4.4.1. Excluding main
 
 Since `main` in `package.json` is entirely optional even inside of npm
 packages, some people may prefer to exclude main entirely in the case of using
 `./index` as that is still in the Node module search algorithm.
 
-### 3.4. ESM Evaluation
+### 4.5. ESM Evaluation
 
-#### 3.4.1. Environment Variables
+#### 4.5.1. Environment Variables
 
 ESM will not be bootstrapped with magic variables and will await upcoming specifications in order to provide such behaviors in a standard way. As such, the following variables are changed:
 
@@ -263,9 +258,13 @@ ESM will not be bootstrapped with magic variables and will await upcoming specif
 
 Like normal scoping rules, if a variable does not exist in a scope, the outer scope is used to find the variable. Since ESM are always strict, errors may be thrown upon trying to use variables that do not exist globally when using ESM.
 
-##### 3.4.1.1. Workaround
+##### 4.5.1.1. Standardization Effort
 
-Although heavily advised against, you can have a NM module sibling for your ESM that can export these things:
+[Efforts are ongoing to reserve a specifier](https://github.com/whatwg/html/issues/1013) that will be compatible in both Browsers and Node. Tentatively it will be `js:context` and export a single `{url}` value.
+
+##### 4.5.1.2. Getting CJS Variables Workaround
+
+Although heavily advised against, you can have a CJS module sibling for your ESM that can export these things:
 
 ```js
 // expose.js
@@ -278,89 +277,52 @@ import expose from './expose.js';
 const {__dirname} = expose;
 ```
 
-#### 3.4.2. Timing
+### 4.6. ES consuming CommonJS
 
-When loading ESM or using any form of `import`, the stack will unwind prior to performing any resolution or evaluation.
-
-##### 3.4.2.1. Example
-
-```javascript
-// entry.js
-require('one.mjs');
-console.log('two');
-```
-
-```javascript
-// one.mjs
-console.log('one');
-```
-
-```sh
-> node entry.js
-two
-one
-```
-
-### 3.5. Cross Module System Communication
-
-ESM and NCJS differ in many ways, as such they need a well defined means of converting between the two module types and systems.
-
-### 3.5.1. NCJS to ESM
-
-After *any* NCJS finishes evaluation, it will be placed into the same cache as ESM.
+After *any* CJS finishes evaluation, it will be placed into the same cache as ESM.
 The value of what is placed in the cache will reflect a single default export pointing to the value of `module.exports` at the time evaluation ended.
 
-Essentially after any NCJS completes evaluation:
+Essentially after any CJS completes evaluation:
 
 1. if there was an error, place the error in the ESM cache and return
 2. let `export` be the value of `module.exports`
 3. if there was an error, place the error in the ESM cache and return
-4. create an ESM with `{default:export}` as its namespace
+4. create an ESM with `{default:module.exports}` as its namespace
 5. place the ESM in the ESM cache
 
-### 3.5.2. ESM to NCJS
+#### 4.6.1. default imports
 
-ESM are *never* placed in the NCJS cache (`require.cache`).
+`module.exports` is a single value. As such it does not have the dictionary
+like properties of ES module exports. In order to transform a CJS module into ESM a `default` export which will
+point to the value of `module.exports` that was snapshotted *imediately after the CJS finished evaluation*. Due to problems in supporting named imports, they will not be enabled by default. Space is intentionally left open to allow named properties to be supported through future explorations.
 
-If `require` resolves to an ESM source text, the following steps are taken.
-
-1. let `ret` be a newly created Promise
-2. queue a load job on the event loop
-  1. if loading completes normally resolve `ret` to the ESM Module Namespace
-  2. if an error occurs reject `ret`
-3. put a "fetching" entry in the ESM cache
-4. return `ret` 
-
-##### 5.4.1.1. Examples
+##### 4.6.1.1. Examples
 
 Given:
 
 ```javascript
-// NCJS.js
+// cjs.js
 module.exports = {
   default:'my-default',
   thing:'stuff'
 };
 ```
 
-You will grab `module.exports` when performing an ES import.
+You will grab `module.exports` when performing an ESM import of `cjs.js`.
 
 ```javascript
 // es.mjs
 
-// grabs the namespace
-import * as baz from './NCJS.js';
+import * as baz from './cjs.js';
 // baz = {
-//   default => module.exports;
+//   get default() {return module.exports;},
 // }
 
-// grabs "default", aka module.exports directly
-import foo from './NCJS.js';
+import foo from './cjs.js';
 // foo = module.exports;
 
-// grabs "default", aka module.exports directly
-import {default as bar} from './NCJS.js';
-// bar = module.exports;
+import {default as bar} from './cjs.js';
+// bar = module.exports
 ```
 
 ------
@@ -368,7 +330,7 @@ import {default as bar} from './NCJS.js';
 Given:
 
 ```javascript
-// NCJS.js
+// cjs.js
 module.exports = null;
 ```
 
@@ -376,11 +338,11 @@ You will grab `module.exports` when performing an ES import.
 
 ```javascript
 // es.mjs
-import foo from './NCJS.js';
+import foo from './cjs.js';
 // foo = null;
 
-import * as bar from './NCJS.js';
-// bar = {default=null};
+import * as bar from './cjs.js';
+// bar = {default:null};
 ```
 
 ------
@@ -388,21 +350,20 @@ import * as bar from './NCJS.js';
 Given:
 
 ```javascript
-// NCJS.js
+// cjs.js
 module.exports = function two() {
   return 2;
 };
 ```
 
-You will grab `module.exports` when performing an ES import.
+You will grab `module.exports` when performing an ESM import.
 
 ```javascript
 // es.mjs
-import foo from './NCJS.js';
+import foo from './cjs.js';
 foo(); // 2
 
-import * as bar from './NCJS.js';
-bar.name; // undefined
+import * as bar from './cjs.js';
 bar.default(); // 2
 bar(); // throws, bar is not a function
 ```
@@ -412,7 +373,7 @@ bar(); // throws, bar is not a function
 Given:
 
 ```javascript
-// NCJS.js
+// cjs.js
 module.exports = Promise.resolve(3);
 ```
 
@@ -420,22 +381,22 @@ You will grab `module.exports` when performing an ES import.
 
 ```javascript
 // es.mjs
-import foo from './NCJS.js';
+import foo from './cjs.js';
 foo.then(console.log); // outputs 3
 
-import * as bar from './NCJS.js';
+import * as bar from './cjs.js';
 bar.default.then(console.log); // outputs 3
-bar.then(console.log); // throws, bar does not have a .then property
+bar.then(console.log); // throws, bar is not a Promise
 ```
 
-### 5.5. NCJS consuming ESM
+### 4.7. CommonJS consuming ES
 
-#### 5.5.1. default exports
+#### 4.7.1. default exports
 
-ESM only export named values. A "default" export is an export that uses
+ES modules only export named values. A "default" export is an export that uses
 the property named `default`.
 
-##### 5.5.1.1. Examples
+##### 4.7.1.1. Examples
 
 Given:
 
@@ -450,17 +411,15 @@ foo = null;
 ```
 
 ```javascript
-// NCJS.js
-const esm = require('./es');
-// esm ~= Promise => {
-//   default => result_from_evaluating_foo;
+// cjs.js
+const es_namespace = await import('./es');
+// es_namespace ~= {
+//   get default() {
+//     return result_from_evaluating_foo;
+//   }
 // }
-esm.then(
-  es_namespace => {
-    console.log(es_namespace.default);
-    // {bar='my-default'}
-  }
-)
+console.log(es_namespace.default);
+// {bar:'my-default'}
 ```
 
 ------
@@ -476,37 +435,38 @@ export class c {};
 ```
 
 ```javascript
-// NCJS.js
-const esm = require('./es');
-// esm ~= Promise => {
-//   foo=foo;
-//   bar=foo;
-//   f=f;
-//   c=c;
+// cjs.js
+const es_namespace = await import('./es');
+// es_namespace ~= {
+//   get foo() {return foo;}
+//   get bar() {return foo;}
+//   get f() {return f;}
+//   get c() {return c;}
 // }
 ```
 
-### 5.6. Known Gotchas
+### 4.8. Known Gotchas
 
-All of these gotchas relate to opt-in semantics and the fact that NCJS has a
-dynamic loader while ESM has a static loader.
+All of these gotchas relate to opt-in semantics and the fact that CommonJS is a
+dynamic loader while ES is a static loader.
 
 No existing code will be affected.
 
-#### 5.6.1. ESM exports are read only
+#### 4.8.1. ES exports are read only
 
-The objects create by an ESM are [ModuleNamespace Objects][5].
+The objects create by an ES module are [ModuleNamespace Objects][5].
 
-These have `[[Set]]` be a no-op and are read only views of the exports of an ESM. Attempting to reassign any named export will not work, but assigning to
+These have `[[Set]]` be a no-op and are read only views of the exports of an ES
+module. Attempting to reassign any named export will not work, but assigning to
 the properties of the exports follows normal rules.
 
-### 5.7. NCJS modules allow mutation of imported modules
+### 4.9. CJS modules allow mutation of imported modules
 
-NCJS modules have allowed mutation on imported modules. When ES modules are
-integrating against NCJS systems like Grunt, it may be necessary to mutate a
+CJS modules have allowed mutation on imported modules. When ES modules are
+integrating against CJS systems like Grunt, it may be necessary to mutate a
 `module.exports`.
 
-Remember that `module.exports` from NCJS is directly available under `default`
+Remember that `module.exports` from CJS is directly available under `default`
 for `import`. This means that if you use:
 
 ```javascript
@@ -525,23 +485,27 @@ import grunt_default from 'grunt';
 Grabs the `default` which is exactly what `module.exports` is, and all the
 properties will be mutable.
 
-#### 5.7.1. ES will not honor reassigning `module.exports` after evaluation
+#### 4.9.1. ES will not honor reassigning `module.exports` after evaluation
 
-Since we need a consistent time to snapshot the `module.exports` of a NCJS
+Since we need a consistent time to snapshot the `module.exports` of a CJS
 module. We will execute it immediately after evaluation. Code such as:
 
 ```javascript
-// bad-NCJS.js
+// bad-cjs.js
 module.exports = 123;
 setTimeout(_ => module.exports = null);
 ```
 
 Will not see `module.exports` change to `null`. All ES module `import`s of the
-module will always see `{default=123}`.
+module will always see `123`.
 
-## 6. Future todo
-
-The following are points which **must** be addressed in the future pending finalization of ESM support in Node. Such problems are not addressed here in order to give time to properly specify the semantics after ESM semantics are fully solidified and to give time to properly design solutions to these problems.
+## 5. JS APIs
 
 * `vm.Module` and ways to create custom ESM implementations such as those in [jsdom](https://github.com/tmpvar/jsdom).
-* Some form of module loader hooks including but not necessarily limited to: source code transformation, cache manipulation for both the ESM and NCJS cache, and affecting the behavior of loading modules.
+* `vm.ReflectiveModule` as a means to declare a list of exports and expose a reflection API to those exports.
+* Providing an option to both `vm.Script` and `vm.Module` to intercept `import()`.
+
+* Loader hooks for:
+  * Rewriting the URL of an `import` request *prior* to loader resolution.
+  * Way to insert Modules a module's local ESM cache.
+  * Way to insert Modules the global ESM cache.
